@@ -381,6 +381,9 @@ class CLIP(nn.Module):
 
         # cosine similarity as logits
         logit_scale = self.logit_scale.exp() # paper 中说，温度tau是log-parameterized的，所以这里要exp一下才能还原期望的值
+        '''
+         为啥要做这个scale，以及0.07的初始值？《CLIP》只是参考继承了其他 paper《https://arxiv.org/pdf/1805.01978.pdf》
+        '''
         logits_per_image = logit_scale * image_features @ text_features.t()
         logits_per_text = logits_per_image.t()
 
