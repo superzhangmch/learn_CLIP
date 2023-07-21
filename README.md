@@ -108,11 +108,11 @@ text_inputs = torch.cat([clip.tokenize(f"a photo of a {c}") for c in cifar100.cl
 
 # Calculate features
 with torch.no_grad():
-    image_features = model.encode_image(image_input)
-    text_features = model.encode_text(text_inputs)
+    image_features = model.encode_image(image_input) # 内部已经做了projection
+    text_features = model.encode_text(text_inputs)   # 内部已经做了projection
 
 # Pick the top 5 most similar labels for the image
-image_features /= image_features.norm(dim=-1, keepdim=True)
+image_features /= image_features.norm(dim=-1, keepdim=True)  # norm是为了算cosine距离
 text_features /= text_features.norm(dim=-1, keepdim=True)
 similarity = (100.0 * image_features @ text_features.T).softmax(dim=-1)
 values, indices = similarity[0].topk(5)
