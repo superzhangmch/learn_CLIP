@@ -66,11 +66,14 @@ class AttentionPool2d(nn.Module):
         self.num_heads = num_heads
 
     def forward(self, x):
-        x = x.flatten(start_dim=2).permute(2, 0, 1)  # NCHW -> (HW)NC
+        x = x.flatten(start_dim=2).permute(2, 0, 1)  # NCHW -> (HW)NC    
+        # input feaMap 的像素数当做attention的sequence length。按globalAvgPool方法的话，则沿着这个seq len取平均就行了，这里要沿此作加权和(attn),所以效果当然是应该更好
+        
         x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
         x = x + self.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
         x, _ = F.multi_head_attention_forward(
-            query=x[:1], key=x, value=x,
+            query=x[:1],       # 用global average pool结果当query（本来这个也足以当做图片的embedding）
+            key=x, value=x,    # "globalAvgPool concat 原始x" 当 key 与 value
             embed_dim_to_check=x.shape[-1],
             num_heads=self.num_heads,
             q_proj_weight=self.q_proj.weight,
@@ -149,7 +152,11 @@ class ModifiedResNet(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-        x = self.attnpool(x)
+        x = self.attnpool(x) 
+        '''
+        上面一句：resnet返回的是[BCHW]shape的，而所需是一个一维向量，所以需要某种pooling方法。没用global average pooling, 而是用了attention_pooling.
+        若用GAP，则是各通道取通道内max，所得向量维度等于通道数。        
+        '''
 
         return x
 
@@ -225,6 +232,7 @@ class VisionTransformer(nn.Module):
         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
         x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+        # 上面一行：增加了 “classification token”
         x = x + self.positional_embedding.to(x.dtype)
         x = self.ln_pre(x)
 
@@ -232,10 +240,12 @@ class VisionTransformer(nn.Module):
         x = self.transformer(x)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
-        x = self.ln_post(x[:, 0, :])
+        x = self.ln_post(x[:, 0, :]) 
+        # 上面一行：取得classification token的embedding代做image的embedding，
 
         if self.proj is not None:
             x = x @ self.proj
+            # 上面一行：为了和text都映射到同一个空间。此即paper中所说的，使用了linear映射，而不是别的paper中的non-linear映射
 
         return x
 
@@ -293,6 +303,12 @@ class CLIP(nn.Module):
 
         self.text_projection = nn.Parameter(torch.empty(transformer_width, embed_dim))
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        '''
+        对应paper中的：
+        the temperature parameter which controls the range of the logits in the softmax, τ , 
+        is directly optimized during training as a log-parameterized multiplicative scalar to avoid turning as a hyper-parameter.
+        本来应作为超参数。但是把它编成可以学习的参数了
+        '''
 
         self.initialize_parameters()
 
@@ -351,7 +367,7 @@ class CLIP(nn.Module):
 
         # x.shape = [batch_size, n_ctx, transformer.width]
         # take features from the eot embedding (eot_token is the highest number in each sequence)
-        x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
+        x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection # 把text和image都映射到同一个空间。此即paper中所说的，使用了linear映射，而不是别的paper中的non-linear映射
 
         return x
 
@@ -360,11 +376,11 @@ class CLIP(nn.Module):
         text_features = self.encode_text(text)
 
         # normalized features
-        image_features = image_features / image_features.norm(dim=1, keepdim=True)
+        image_features = image_features / image_features.norm(dim=1, keepdim=True) # 取norm是为了下面做点积后得到的正是cosine距离
         text_features = text_features / text_features.norm(dim=1, keepdim=True)
 
         # cosine similarity as logits
-        logit_scale = self.logit_scale.exp()
+        logit_scale = self.logit_scale.exp() # paper 中说，温度tau是log-parameterized的，所以这里要exp一下才能还原期望的值
         logits_per_image = logit_scale * image_features @ text_features.t()
         logits_per_text = logits_per_image.t()
 
